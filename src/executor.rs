@@ -3,13 +3,16 @@ use crate::queue::Queue;
 use crate::queue::Task;
 use crate::worker_pool::{SharedState, WorkerState};
 use diesel::pg::PgConnection;
-use diesel::r2d2::{ConnectionManager, PooledConnection};
 use log::error;
 use std::thread;
 use std::time::Duration;
+use std::ops::Deref;
 
-pub struct Executor {
-    pub pooled_connection: PooledConnection<ConnectionManager<PgConnection>>,
+pub struct Executor<Conn>
+where
+    Conn: Deref<Target=PgConnection>,
+{
+    pub pooled_connection: Conn,
     pub task_type: Option<String>,
     pub sleep_params: SleepParams,
     pub retention_mode: RetentionMode,
@@ -70,8 +73,11 @@ pub trait Runnable {
     }
 }
 
-impl Executor {
-    pub fn new(pooled_connection: PooledConnection<ConnectionManager<PgConnection>>) -> Self {
+impl<Conn> Executor<Conn>
+where
+    Conn: Deref<Target=PgConnection>
+{
+    pub fn new(pooled_connection: Conn) -> Self {
         Self {
             pooled_connection,
             sleep_params: SleepParams::default(),
