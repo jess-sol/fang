@@ -111,7 +111,7 @@ impl Executor {
                 }
             }
 
-            match Queue::fetch_and_touch_query(&self.pooled_connection, &self.task_type.clone()) {
+            match Queue::fetch_and_touch_query(&*self.pooled_connection, &self.task_type.clone()) {
                 Ok(Some(task)) => {
                     self.maybe_reset_sleep_period();
                     self.run(task);
@@ -153,26 +153,26 @@ impl Executor {
         match self.retention_mode {
             RetentionMode::KeepAll => {
                 match result {
-                    Ok(task) => Queue::finish_task_query(&self.pooled_connection, &task).unwrap(),
+                    Ok(task) => Queue::finish_task_query(&*self.pooled_connection, &task).unwrap(),
                     Err((task, error)) => {
-                        Queue::fail_task_query(&self.pooled_connection, &task, error).unwrap()
+                        Queue::fail_task_query(&*self.pooled_connection, &task, error).unwrap()
                     }
                 };
             }
             RetentionMode::RemoveAll => {
                 match result {
-                    Ok(task) => Queue::remove_task_query(&self.pooled_connection, task.id).unwrap(),
+                    Ok(task) => Queue::remove_task_query(&*self.pooled_connection, task.id).unwrap(),
                     Err((task, _error)) => {
-                        Queue::remove_task_query(&self.pooled_connection, task.id).unwrap()
+                        Queue::remove_task_query(&*self.pooled_connection, task.id).unwrap()
                     }
                 };
             }
             RetentionMode::RemoveFinished => match result {
                 Ok(task) => {
-                    Queue::remove_task_query(&self.pooled_connection, task.id).unwrap();
+                    Queue::remove_task_query(&*self.pooled_connection, task.id).unwrap();
                 }
                 Err((task, error)) => {
-                    Queue::fail_task_query(&self.pooled_connection, &task, error).unwrap();
+                    Queue::fail_task_query(&*self.pooled_connection, &task, error).unwrap();
                 }
             },
         }
@@ -271,14 +271,14 @@ mod executor_tests {
         executor
             .pooled_connection
             .test_transaction::<(), Error, _>(|| {
-                let task = Queue::insert_query(&executor.pooled_connection, &new_task).unwrap();
+                let task = Queue::insert_query(&*executor.pooled_connection, &new_task).unwrap();
 
                 assert_eq!(FangTaskState::New, task.state);
 
                 executor.run(task.clone());
 
                 let found_task =
-                    Queue::find_task_by_id_query(&executor.pooled_connection, task.id).unwrap();
+                    Queue::find_task_by_id_query(&*executor.pooled_connection, task.id).unwrap();
 
                 assert_eq!(FangTaskState::Finished, found_task.state);
 
@@ -304,8 +304,8 @@ mod executor_tests {
 
         let executor = Executor::new(pooled_connection());
 
-        let task1 = Queue::insert_query(&executor.pooled_connection, &new_task1).unwrap();
-        let task2 = Queue::insert_query(&executor.pooled_connection, &new_task2).unwrap();
+        let task1 = Queue::insert_query(&*executor.pooled_connection, &new_task1).unwrap();
+        let task2 = Queue::insert_query(&*executor.pooled_connection, &new_task2).unwrap();
 
         assert_eq!(FangTaskState::New, task1.state);
         assert_eq!(FangTaskState::New, task2.state);
@@ -321,11 +321,11 @@ mod executor_tests {
         std::thread::sleep(std::time::Duration::from_millis(1000));
 
         let found_task1 =
-            Queue::find_task_by_id_query(&executor.pooled_connection, task1.id).unwrap();
+            Queue::find_task_by_id_query(&*executor.pooled_connection, task1.id).unwrap();
         assert_eq!(FangTaskState::Finished, found_task1.state);
 
         let found_task2 =
-            Queue::find_task_by_id_query(&executor.pooled_connection, task2.id).unwrap();
+            Queue::find_task_by_id_query(&*executor.pooled_connection, task2.id).unwrap();
         assert_eq!(FangTaskState::New, found_task2.state);
     }
 
@@ -343,14 +343,14 @@ mod executor_tests {
         executor
             .pooled_connection
             .test_transaction::<(), Error, _>(|| {
-                let task = Queue::insert_query(&executor.pooled_connection, &new_task).unwrap();
+                let task = Queue::insert_query(&*executor.pooled_connection, &new_task).unwrap();
 
                 assert_eq!(FangTaskState::New, task.state);
 
                 executor.run(task.clone());
 
                 let found_task =
-                    Queue::find_task_by_id_query(&executor.pooled_connection, task.id).unwrap();
+                    Queue::find_task_by_id_query(&*executor.pooled_connection, task.id).unwrap();
 
                 assert_eq!(FangTaskState::Failed, found_task.state);
                 assert_eq!(

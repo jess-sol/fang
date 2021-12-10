@@ -3,39 +3,62 @@ use crate::queue::PeriodicTask;
 use crate::queue::Queue;
 use std::thread;
 use std::time::Duration;
+use std::borrow::Borrow;
+use diesel::PgConnection;
 
-pub struct Scheduler {
+pub struct Scheduler<Conn>
+where
+    Conn: Borrow<PgConnection> + Send + 'static
+{
     pub check_period: u64,
     pub error_margin_seconds: u64,
-    pub queue: Queue,
+    pub queue: Queue<Conn>,
 }
 
-impl Drop for Scheduler {
+impl<Conn> Drop for Scheduler<Conn>
+where
+    Conn: Borrow<PgConnection> + Send + 'static
+{
     fn drop(&mut self) {
-        Scheduler::start(self.check_period, self.error_margin_seconds)
+        Scheduler::start_new(self.check_period, self.error_margin_seconds)
     }
 }
 
-impl Scheduler {
-    pub fn start(check_period: u64, error_margin_seconds: u64) {
-        let queue = Queue::new();
+impl Scheduler<PgConnection> {
+    pub fn start_new(check_period: u64, error_margin_seconds: u64) {
         let builder = thread::Builder::new().name("scheduler".to_string());
 
         builder
             .spawn(move || {
+                let queue = Queue::new();
                 let scheduler = Self::new(check_period, error_margin_seconds, queue);
 
                 scheduler.schedule_loop();
             })
             .unwrap();
     }
+}
 
-    pub fn new(check_period: u64, error_margin_seconds: u64, queue: Queue) -> Self {
+impl<Conn> Scheduler<Conn>
+where
+    Conn: Borrow<PgConnection> + Send + 'static
+{
+    pub fn new(check_period: u64, error_margin_seconds: u64, queue: Queue<Conn>) -> Self {
         Self {
             check_period,
             queue,
             error_margin_seconds,
         }
+    }
+
+    pub fn start(self) {
+        let builder = thread::Builder::new().name("scheduler".to_string());
+
+        builder
+            .spawn(move || {
+                self.schedule_loop();
+            })
+            .unwrap();
     }
 
     pub fn schedule_loop(&self) {
@@ -111,7 +134,7 @@ mod job_scheduler_tests {
         let queue = Queue::new();
 
         queue.push_periodic_task(&ScheduledJob {}, 10).unwrap();
-        Scheduler::start(1, 2);
+        Scheduler::start_new(1, 2);
 
         let sleep_duration = Duration::from_secs(15);
         thread::sleep(sleep_duration);
