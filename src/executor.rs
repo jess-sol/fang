@@ -117,22 +117,27 @@ where
                 }
             }
 
-            match Queue::fetch_and_touch_query(&*self.pooled_connection, &self.task_type.clone()) {
-                Ok(Some(task)) => {
+            match self.run_task() {
+                Ok(Some(_)) => {
                     self.maybe_reset_sleep_period();
-                    self.run(task);
                 }
                 Ok(None) => {
                     self.sleep();
                 }
-
                 Err(error) => {
                     error!("Failed to fetch a task {:?}", error);
-
                     self.sleep();
                 }
             };
         }
+    }
+
+    pub fn run_task(&mut self) -> Result<Option<Task>, diesel::result::Error> {
+        let result = Queue::fetch_and_touch_query(&*self.pooled_connection, &self.task_type.clone());
+        if let Ok(Some(ref task)) = result {
+            self.run(task.clone());
+        }
+        result
     }
 
     pub fn maybe_reset_sleep_period(&mut self) {
