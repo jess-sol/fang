@@ -64,6 +64,25 @@ pub struct Error {
     pub description: String,
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f,"{}", self.description)
+    }
+}
+
+impl std::error::Error for Error { }
+
+#[derive(Debug)]
+pub struct TaskError(Task, Error);
+
+impl std::fmt::Display for TaskError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f,"{}; {:?}", self.1, self.0)
+    }
+}
+
+impl std::error::Error for TaskError { }
+
 #[typetag::serde(tag = "type")]
 pub trait Runnable {
     fn run(&self, connection: &PgConnection) -> Result<(), Error>;
@@ -103,9 +122,10 @@ where
         self.retention_mode = retention_mode;
     }
 
-    pub fn run(&self, task: Task) {
+    pub fn run(&self, task: Task) -> Result<Task, TaskError> {
         let result = self.execute_task(task);
-        self.finalize_task(result)
+        self.finalize_task(&result);
+        result
     }
 
     pub fn run_tasks(&mut self) -> Result<(), FangError> {
@@ -125,19 +145,19 @@ where
                     self.sleep();
                 }
                 Err(error) => {
-                    error!("Failed to fetch a task {:?}", error);
+                    error!("Error while processing task: {:?}", error);
                     self.sleep();
                 }
             };
         }
     }
 
-    pub fn run_task(&mut self) -> Result<Option<Task>, diesel::result::Error> {
+    pub fn run_task(&mut self) -> Result<Option<Task>, FangError> {
         let result = Queue::fetch_and_touch_query(&*self.pooled_connection, &self.task_type.clone());
         if let Ok(Some(ref task)) = result {
-            self.run(task.clone());
+            self.run(task.clone())?;
         }
-        result
+        result.map_err(FangError::DbError)
     }
 
     pub fn maybe_reset_sleep_period(&mut self) {
@@ -150,30 +170,30 @@ where
         thread::sleep(Duration::from_secs(self.sleep_params.sleep_period));
     }
 
-    fn execute_task(&self, task: Task) -> Result<Task, (Task, String)> {
+    fn execute_task(&self, task: Task) -> Result<Task, TaskError> {
         let actual_task: Box<dyn Runnable> = serde_json::from_value(task.metadata.clone()).unwrap();
         let task_result = actual_task.run(&self.pooled_connection);
 
         match task_result {
             Ok(()) => Ok(task),
-            Err(error) => Err((task, error.description)),
+            Err(error) => Err(TaskError(task, error)),
         }
     }
 
-    fn finalize_task(&self, result: Result<Task, (Task, String)>) {
+    fn finalize_task(&self, result: &Result<Task, TaskError>) {
         match self.retention_mode {
             RetentionMode::KeepAll => {
                 match result {
-                    Ok(task) => Queue::finish_task_query(&*self.pooled_connection, &task).unwrap(),
-                    Err((task, error)) => {
-                        Queue::fail_task_query(&*self.pooled_connection, &task, error).unwrap()
+                    Ok(task) => Queue::finish_task_query(&*self.pooled_connection, task).unwrap(),
+                    Err(TaskError(task, error)) => {
+                        Queue::fail_task_query(&*self.pooled_connection, task, error.description.to_owned()).unwrap()
                     }
                 };
             }
             RetentionMode::RemoveAll => {
                 match result {
                     Ok(task) => Queue::remove_task_query(&*self.pooled_connection, task.id).unwrap(),
-                    Err((task, _error)) => {
+                    Err(TaskError(task, _)) => {
                         Queue::remove_task_query(&*self.pooled_connection, task.id).unwrap()
                     }
                 };
@@ -182,8 +202,8 @@ where
                 Ok(task) => {
                     Queue::remove_task_query(&*self.pooled_connection, task.id).unwrap();
                 }
-                Err((task, error)) => {
-                    Queue::fail_task_query(&*self.pooled_connection, &task, error).unwrap();
+                Err(TaskError(task, error)) => {
+                    Queue::fail_task_query(&*self.pooled_connection, task, error.description.to_owned()).unwrap();
                 }
             },
         }
@@ -192,7 +212,7 @@ where
 
 #[cfg(test)]
 mod executor_tests {
-    use super::Error;
+    use super::{Error, TaskError};
     use super::Executor;
     use super::RetentionMode;
     use super::Runnable;
@@ -200,6 +220,7 @@ mod executor_tests {
     use crate::queue::Queue;
     use crate::schema::FangTaskState;
     use crate::typetag;
+    use assert_matches::assert_matches;
     use diesel::connection::Connection;
     use diesel::pg::PgConnection;
     use diesel::r2d2::{ConnectionManager, PooledConnection};
@@ -286,7 +307,7 @@ mod executor_tests {
 
                 assert_eq!(FangTaskState::New, task.state);
 
-                executor.run(task.clone());
+                executor.run(task.clone()).unwrap();
 
                 let found_task =
                     Queue::find_task_by_id_query(&*executor.pooled_connection, task.id).unwrap();
@@ -358,7 +379,8 @@ mod executor_tests {
 
                 assert_eq!(FangTaskState::New, task.state);
 
-                executor.run(task.clone());
+                let result = executor.run(task.clone());
+                assert_matches!(result, Err(TaskError(_, _)));
 
                 let found_task =
                     Queue::find_task_by_id_query(&*executor.pooled_connection, task.id).unwrap();
