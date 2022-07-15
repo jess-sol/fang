@@ -12,18 +12,19 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 
 #[derive(Clone)]
-pub struct WorkerPool {
+pub struct WorkerPool<D: Clone + Send + 'static> {
     pub number_of_workers: u32,
     pub worker_params: WorkerParams,
     pub connection_pool: r2d2::Pool<r2d2::ConnectionManager<PgConnection>>,
+    pub worker_data: Option<Box<D>>,
     shared_state: SharedState,
     thread_join_handles: Arc<RwLock<HashMap<String, thread::JoinHandle<()>>>>,
 }
 
-pub struct WorkerThread {
+pub struct WorkerThread<D: Clone + Send + 'static> {
     pub name: String,
     pub restarts: u64,
-    pub worker_pool: WorkerPool,
+    pub worker_pool: WorkerPool<D>,
     graceful_shutdown: bool,
 }
 
@@ -69,7 +70,7 @@ impl WorkerParams {
     }
 }
 
-impl WorkerPool {
+impl<D: Clone + Send + 'static> WorkerPool<D> {
     pub fn new(number_of_workers: u32) -> Self {
         let worker_params = WorkerParams::new();
         let connection_pool = Queue::connection_pool(number_of_workers);
@@ -78,6 +79,7 @@ impl WorkerPool {
             number_of_workers,
             worker_params,
             connection_pool,
+            worker_data: None,
             shared_state: Arc::new(RwLock::new(WorkerState::Running)),
             thread_join_handles: Arc::new(RwLock::new(HashMap::with_capacity(
                 number_of_workers as usize,
@@ -85,13 +87,14 @@ impl WorkerPool {
         }
     }
 
-    pub fn new_with_params(number_of_workers: u32, worker_params: WorkerParams) -> Self {
+    pub fn new_with_params(number_of_workers: u32, worker_params: WorkerParams, worker_data: Option<D>) -> Self {
         let connection_pool = Queue::connection_pool(number_of_workers);
 
         Self {
             number_of_workers,
             worker_params,
             connection_pool,
+            worker_data: worker_data.map(Box::new),
             shared_state: Arc::new(RwLock::new(WorkerState::Running)),
             thread_join_handles: Arc::new(RwLock::new(HashMap::with_capacity(
                 number_of_workers as usize,
@@ -129,8 +132,8 @@ impl WorkerPool {
     }
 }
 
-impl WorkerThread {
-    pub fn new(name: String, restarts: u64, worker_pool: WorkerPool) -> Self {
+impl<D: Clone + Send + 'static> WorkerThread<D> {
+    pub fn new(name: String, restarts: u64, worker_pool: WorkerPool<D>) -> Self {
         Self {
             name,
             restarts,
@@ -142,7 +145,7 @@ impl WorkerThread {
     pub fn spawn_in_pool(
         name: String,
         restarts: u64,
-        worker_pool: WorkerPool,
+        worker_pool: WorkerPool<D>,
     ) -> Result<(), FangError> {
         info!(
             "starting a worker thread {}, number of restarts {}",
@@ -160,7 +163,7 @@ impl WorkerThread {
 
     fn spawn_thread(
         name: String,
-        mut job: WorkerThread,
+        mut job: WorkerThread<D>,
     ) -> Result<thread::JoinHandle<()>, FangError> {
         let builder = thread::Builder::new().name(name.clone());
         builder
@@ -203,7 +206,7 @@ impl WorkerThread {
     }
 }
 
-impl Drop for WorkerThread {
+impl<D: Clone + Send + 'static> Drop for WorkerThread<D> {
     fn drop(&mut self) {
         if self.graceful_shutdown {
             return;
@@ -320,7 +323,7 @@ mod job_pool_tests {
 
         let mut worker_params = WorkerParams::new();
         worker_params.set_retention_mode(RetentionMode::KeepAll);
-        let mut job_pool = WorkerPool::new_with_params(2, worker_params);
+        let mut job_pool = WorkerPool::new_with_params(2, worker_params, Option::<()>::None);
 
         queue.push_task(&ShutdownJob::new(100)).unwrap();
         queue.push_task(&ShutdownJob::new(200)).unwrap();
@@ -351,7 +354,7 @@ mod job_pool_tests {
 
         let mut worker_params = WorkerParams::new();
         worker_params.set_retention_mode(RetentionMode::KeepAll);
-        let mut job_pool = WorkerPool::new_with_params(2, worker_params);
+        let mut job_pool = WorkerPool::new_with_params(2, worker_params, Option::<()>::None);
 
         queue.push_task(&MyJob::new(100)).unwrap();
         queue.push_task(&MyJob::new(200)).unwrap();
